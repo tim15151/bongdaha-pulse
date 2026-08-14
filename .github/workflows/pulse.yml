@@ -2,6 +2,12 @@ name: BongDaHa Pulse
 
 on:
   workflow_dispatch:
+    inputs:
+      visits:
+        description: "Số lượt test thủ công"
+        required: false
+        default: "3"
+        type: string
 
   schedule:
     - cron: "15 7 * * *"
@@ -28,31 +34,41 @@ on:
     - cron: "10 22 * * *"
       timezone: "Asia/Ho_Chi_Minh"
 
+permissions:
+  contents: read
+
+concurrency:
+  group: bongdaha-pulse
+  cancel-in-progress: false
+
 jobs:
   pulse:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
+    # Image chính chủ Playwright đã có Chromium + system deps.
+    # Package Python Playwright vẫn được pin/cài bằng requirements.txt.
+    container:
+      image: mcr.microsoft.com/playwright/python:v1.61.0-noble
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-
-      - name: Install Python packages
+      - name: Install Python package
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Install Chromium
-        run: python -m playwright install --with-deps chromium
+      - name: Show runtime
+        run: |
+          python --version
+          python -m playwright --version
 
       - name: Run BongDaHa Pulse
         env:
           PROXY_HOST: ${{ secrets.PROXY_HOST }}
           PROXY_USER: ${{ secrets.PROXY_USER }}
           PROXY_PASS: ${{ secrets.PROXY_PASS }}
+          VISITS_PER_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.visits || '' }}
         run: python traffic.py
