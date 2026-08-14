@@ -1,0 +1,58 @@
+name: BongDaHa Pulse
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    - cron: "15 7 * * *"
+      timezone: "Asia/Ho_Chi_Minh"
+
+    - cron: "20 9 * * *"
+      timezone: "Asia/Ho_Chi_Minh"
+
+    - cron: "35 11 * * *"
+      timezone: "Asia/Ho_Chi_Minh"
+
+    - cron: "10 13 * * *"
+      timezone: "Asia/Ho_Chi_Minh"
+
+    - cron: "25 15 * * *"
+      timezone: "Asia/Ho_Chi_Minh"
+
+    - cron: "40 17 * * *"
+      timezone: "Asia/Ho_Chi_Minh"
+
+    - cron: "20 20 * * *"
+      timezone: "Asia/Ho_Chi_Minh"
+
+    - cron: "10 22 * * *"
+      timezone: "Asia/Ho_Chi_Minh"
+
+jobs:
+  pulse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install Python packages
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Run BongDaHa Pulse
+        env:
+          PROXY_HOST: ${{ secrets.PROXY_HOST }}
+          PROXY_USER: ${{ secrets.PROXY_USER }}
+          PROXY_PASS: ${{ secrets.PROXY_PASS }}
+        run: python traffic.py
