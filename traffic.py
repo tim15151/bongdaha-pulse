@@ -5,7 +5,9 @@ import urllib.parse
 
 from playwright.sync_api import sync_playwright
 
+
 SITE = "https://bongdaha.com"
+NEWS_PAGE = f"{SITE}/tin-bongda"
 ARTICLE_PREFIX = "/tin-bongda/"
 
 PROXY_HOST = os.environ["PROXY_HOST"]
@@ -15,9 +17,19 @@ PROXY_PASS = os.environ["PROXY_PASS"]
 PROXY_ENDPOINT_MIN = 1
 PROXY_ENDPOINT_MAX = 2393
 
-VISITS_PER_RUN = int(os.getenv("VISITS_PER_RUN") or random.randint(7, 12))
+VISITS_PER_RUN = int(
+    os.getenv("VISITS_PER_RUN")
+    or random.randint(7, 12)
+)
 
-BLOCK_RESOURCE_TYPES = {"image", "media", "font", "stylesheet"}
+# Giảm bandwidth proxy.
+BLOCK_RESOURCE_TYPES = {
+    "image",
+    "media",
+    "font",
+    "stylesheet",
+}
+
 GA_HOST_SUFFIX = "google-analytics.com"
 
 
@@ -33,8 +45,13 @@ def is_ga_collect(url):
 
     host = parsed.netloc.lower().split(":")[0]
     path = parsed.path.lower()
-    return host.endswith(GA_HOST_SUFFIX) and (
-        "/g/collect" in path or path.endswith("/collect")
+
+    return (
+        host.endswith(GA_HOST_SUFFIX)
+        and (
+            "/g/collect" in path
+            or path.endswith("/collect")
+        )
     )
 
 
@@ -50,23 +67,44 @@ def normalize_article_url(href):
 
     if parsed.scheme not in {"http", "https"}:
         return None
+
     if parsed.netloc.lower() != "bongdaha.com":
         return None
 
     path = parsed.path or "/"
+
+    # Chỉ nhận /tin-bongda/<slug>
     if not path.startswith(ARTICLE_PREFIX):
         return None
 
     rest = path[len(ARTICLE_PREFIX):].strip("/")
+
+    # Bỏ chính trang /tin-bongda/
     if not rest:
         return None
 
     lowered = path.lower()
-    blocked = ("/feed", "/page/", "/author/", "/tag/", "/wp-")
+
+    blocked = (
+        "/feed",
+        "/page/",
+        "/author/",
+        "/tag/",
+        "/wp-",
+    )
+
     if any(x in lowered for x in blocked):
         return None
 
-    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+    return urllib.parse.urlunsplit(
+        (
+            "https",
+            "bongdaha.com",
+            path,
+            "",
+            "",
+        )
+    )
 
 
 def collect_article_urls(page):
@@ -76,12 +114,39 @@ def collect_article_urls(page):
     )
 
     urls = []
+
     for href in hrefs:
         url = normalize_article_url(href)
+
         if url:
             urls.append(url)
 
     return list(dict.fromkeys(urls))
+
+
+def wait_and_collect_articles(page):
+    """
+    /tin-bongda có thể render bài bằng JS.
+    Thử vài vòng + scroll nhẹ trước khi kết luận ARTICLE_POOL=0.
+    """
+    for attempt in range(1, 5):
+        urls = collect_article_urls(page)
+
+        if urls:
+            return urls
+
+        log(f"Chờ danh sách bài... attempt {attempt}/4")
+
+        try:
+            page.evaluate(
+                "window.scrollTo(0, Math.max(document.body.scrollHeight, 1200))"
+            )
+        except Exception:
+            pass
+
+        page.wait_for_timeout(2500)
+
+    return []
 
 
 def run_visit(browser, index, endpoint_id):
@@ -100,16 +165,19 @@ def run_visit(browser, index, endpoint_id):
         )
 
         page = context.new_page()
+
         blocked = 0
         ga_hits = 0
 
         def watch_request(request):
             nonlocal ga_hits
+
             if is_ga_collect(request.url):
                 ga_hits += 1
 
         def intercept(route):
             nonlocal blocked
+
             req = route.request
 
             if req.resource_type in BLOCK_RESOURCE_TYPES:
@@ -117,6 +185,8 @@ def run_visit(browser, index, endpoint_id):
                 route.abort()
                 return
 
+            # Marker nội bộ chỉ gắn request về bongdaha.com.
+            # Không gắn request GA.
             try:
                 host = urllib.parse.urlsplit(req.url).netloc.lower()
             except Exception:
@@ -133,33 +203,70 @@ def run_visit(browser, index, endpoint_id):
         page.route("**/*", intercept)
 
         log("")
-        log("=" * 68)
+        log("=" * 72)
         log(f"[{index}/{VISITS_PER_RUN}] Proxy endpoint: VN-{endpoint_id}")
 
+        # STEP 1: vào homepage.
         home_response = page.goto(
             SITE + "/",
             wait_until="domcontentloaded",
             timeout=45000,
         )
-        home_status = home_response.status if home_response else "NO_RESPONSE"
 
-        page.wait_for_timeout(random.randint(2500, 4500))
-        article_urls = collect_article_urls(page)
+        home_status = (
+            home_response.status
+            if home_response
+            else "NO_RESPONSE"
+        )
+
+        page.wait_for_timeout(random.randint(1800, 3000))
+
+        # STEP 2: lướt sang TIN THỂ THAO.
+        news_response = page.goto(
+            NEWS_PAGE,
+            wait_until="domcontentloaded",
+            timeout=45000,
+        )
+
+        news_status = (
+            news_response.status
+            if news_response
+            else "NO_RESPONSE"
+        )
+
+        page.wait_for_timeout(2000)
+
+        article_urls = wait_and_collect_articles(page)
 
         if not article_urls:
             log(
-                f"HOME={home_status} | ARTICLE_POOL=0 | "
-                f"GA_REQ={ga_hits} | blocked={blocked}"
+                f"HOME={home_status} | "
+                f"NEWS={news_status} | "
+                f"ARTICLE_POOL=0 | "
+                f"GA_REQ={ga_hits} | "
+                f"blocked={blocked}"
             )
-            return {"http_ok": False, "ga_hit": ga_hits > 0, "article_pool": 0}
 
+            return {
+                "http_ok": False,
+                "ga_hit": ga_hits > 0,
+                "article_pool": 0,
+            }
+
+        # STEP 3: random đúng 1 bài /tin-bongda/<slug>.
         article_url = random.choice(article_urls)
+
         article_response = page.goto(
             article_url,
             wait_until="domcontentloaded",
             timeout=45000,
         )
-        article_status = article_response.status if article_response else "NO_RESPONSE"
+
+        article_status = (
+            article_response.status
+            if article_response
+            else "NO_RESPONSE"
+        )
 
         wait_seconds = random.randint(6, 10)
         page.wait_for_timeout(wait_seconds * 1000)
@@ -168,15 +275,22 @@ def run_visit(browser, index, endpoint_id):
 
         log(f"ARTICLE_POOL={len(article_urls)}")
         log(f"ARTICLE={article_url}")
+
         log(
-            f"HOME={home_status} | ARTICLE_HTTP={article_status} | "
-            f"GA_HIT={ga_status} | GA_REQ={ga_hits} | "
-            f"blocked={blocked} | wait={wait_seconds}s"
+            f"HOME={home_status} | "
+            f"NEWS={news_status} | "
+            f"ARTICLE_HTTP={article_status} | "
+            f"GA_HIT={ga_status} | "
+            f"GA_REQ={ga_hits} | "
+            f"blocked={blocked} | "
+            f"wait={wait_seconds}s"
         )
 
         http_ok = (
             isinstance(home_status, int)
             and home_status < 400
+            and isinstance(news_status, int)
+            and news_status < 400
             and isinstance(article_status, int)
             and article_status < 400
         )
@@ -188,8 +302,16 @@ def run_visit(browser, index, endpoint_id):
         }
 
     except Exception as exc:
-        log(f"FAIL | VN-{endpoint_id} | {type(exc).__name__}: {exc}")
-        return {"http_ok": False, "ga_hit": False, "article_pool": 0}
+        log(
+            f"FAIL | VN-{endpoint_id} | "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        return {
+            "http_ok": False,
+            "ga_hit": False,
+            "article_pool": 0,
+        }
 
     finally:
         if context:
@@ -203,46 +325,81 @@ def main():
     if VISITS_PER_RUN < 1:
         raise ValueError("VISITS_PER_RUN phải >= 1")
 
-    endpoint_count = PROXY_ENDPOINT_MAX - PROXY_ENDPOINT_MIN + 1
+    endpoint_count = (
+        PROXY_ENDPOINT_MAX
+        - PROXY_ENDPOINT_MIN
+        + 1
+    )
 
     if VISITS_PER_RUN <= endpoint_count:
         endpoints = random.sample(
-            range(PROXY_ENDPOINT_MIN, PROXY_ENDPOINT_MAX + 1),
+            range(
+                PROXY_ENDPOINT_MIN,
+                PROXY_ENDPOINT_MAX + 1,
+            ),
             VISITS_PER_RUN,
         )
     else:
         endpoints = [
-            random.randint(PROXY_ENDPOINT_MIN, PROXY_ENDPOINT_MAX)
+            random.randint(
+                PROXY_ENDPOINT_MIN,
+                PROXY_ENDPOINT_MAX,
+            )
             for _ in range(VISITS_PER_RUN)
         ]
 
     log("")
-    log("BONGDAHA PULSE - HOME → TIN BONG DA")
+    log("BONGDAHA PULSE - HOME → TIN BONG DA → ARTICLE")
     log(f"Site: {SITE}")
+    log(f"News page: {NEWS_PAGE}")
     log(f"Article prefix: {ARTICLE_PREFIX}")
     log(f"Visits/run: {VISITS_PER_RUN}")
-    log(f"Proxy pool: VN-{PROXY_ENDPOINT_MIN} → VN-{PROXY_ENDPOINT_MAX}")
+    log(
+        f"Proxy pool: "
+        f"VN-{PROXY_ENDPOINT_MIN} "
+        f"→ VN-{PROXY_ENDPOINT_MAX}"
+    )
 
     http_success = 0
     ga_success = 0
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(
+            headless=True
+        )
 
         try:
-            for i, endpoint_id in enumerate(endpoints, start=1):
-                result = run_visit(browser, i, endpoint_id)
+            for i, endpoint_id in enumerate(
+                endpoints,
+                start=1,
+            ):
+                result = run_visit(
+                    browser,
+                    i,
+                    endpoint_id,
+                )
 
+                # Retry nhẹ 1 lần nếu route/session lỗi.
                 if not result["http_ok"]:
                     retry_endpoint = random.randint(
                         PROXY_ENDPOINT_MIN,
                         PROXY_ENDPOINT_MAX,
                     )
-                    log(f"Retry visit {i} với VN-{retry_endpoint}")
-                    result = run_visit(browser, i, retry_endpoint)
+
+                    log(
+                        f"Retry visit {i} "
+                        f"với VN-{retry_endpoint}"
+                    )
+
+                    result = run_visit(
+                        browser,
+                        i,
+                        retry_endpoint,
+                    )
 
                 if result["http_ok"]:
                     http_success += 1
+
                 if result["ga_hit"]:
                     ga_success += 1
 
@@ -255,9 +412,11 @@ def main():
             browser.close()
 
     log("")
-    log("=" * 68)
+    log("=" * 72)
+
     log(
-        f"DONE | HTTP_OK={http_success}/{VISITS_PER_RUN} | "
+        f"DONE | "
+        f"HTTP_OK={http_success}/{VISITS_PER_RUN} | "
         f"GA_HIT={ga_success}/{VISITS_PER_RUN}"
     )
 
