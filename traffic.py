@@ -19,7 +19,7 @@ PROXY_ENDPOINT_MAX = 2393
 
 VISITS_PER_RUN = int(
     os.getenv("VISITS_PER_RUN")
-    or random.randint(7, 12)
+    or random.randint(15, 24)
 )
 
 # Chặn image, media, font để tiết kiệm bandwidth proxy.
