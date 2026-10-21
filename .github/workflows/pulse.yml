@@ -6,7 +6,7 @@ on:
       visits:
         description: "Số lượt test thủ công"
         required: false
-        default: "6"
+        default: "9"
         type: string
 
   schedule:
@@ -44,7 +44,7 @@ concurrency:
 jobs:
   pulse:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
 
     # Image chính chủ Playwright đã có Chromium + system deps.
     # Package Python Playwright vẫn được pin/cài bằng requirements.txt.
