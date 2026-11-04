@@ -284,7 +284,7 @@ def simulate_human_reading(page, is_mobile=False):
         page.wait_for_timeout(dwell_ms)
 
 
-def run_visit(browser, index, endpoint_id, cached_articles=None):
+def run_visit(browser, index, endpoint_id, cached_articles=None, use_proxy=True):
     proxy_user = f"{PROXY_USER}-VN-{endpoint_id}"
     context = None
     device = random.choice(DEVICE_PROFILES)
@@ -299,7 +299,7 @@ def run_visit(browser, index, endpoint_id, cached_articles=None):
             "is_mobile": device["is_mobile"],
             "has_touch": device["has_touch"],
         }
-        if PROXY_HOST:
+        if use_proxy and PROXY_HOST:
             ctx_args["proxy"] = {
                 "server": f"http://{PROXY_HOST}",
                 "username": proxy_user,
@@ -337,7 +337,8 @@ def run_visit(browser, index, endpoint_id, cached_articles=None):
 
         log("")
         log("=" * 72)
-        log(f"[{index}/{VISITS_PER_RUN}] Thiết bị: {device['name']} | Proxy: VN-{endpoint_id}")
+        proxy_info = f"Proxy: VN-{endpoint_id}" if (use_proxy and PROXY_HOST) else "Direct IP (Proxy fallback)"
+        log(f"[{index}/{VISITS_PER_RUN}] Thiết bị: {device['name']} | {proxy_info}")
 
         article_urls = cached_articles or []
         home_status = "N/A"
@@ -469,6 +470,8 @@ def main():
     http_success = 0
     ga_success = 0
     discovered_articles = []
+    proxy_failures = 0
+    disable_proxy_permanently = False
 
     with sync_playwright() as p:
         # Chromium launch arguments chống flag automation
@@ -485,11 +488,13 @@ def main():
 
         try:
             for i, endpoint_id in enumerate(endpoints, start=1):
+                use_proxy = bool(PROXY_HOST and not disable_proxy_permanently)
                 result = run_visit(
                     browser,
                     i,
                     endpoint_id,
                     cached_articles=discovered_articles,
+                    use_proxy=use_proxy,
                 )
 
                 if result.get("article_urls"):
@@ -497,19 +502,34 @@ def main():
 
                 # Retry nhẹ 1 lần nếu kết nối lỗi
                 if not result["http_ok"]:
+                    if use_proxy:
+                        proxy_failures += 1
+                        # Nếu proxy lỗi liên tiếp 2 lần, tự động tắt proxy chuyển sang direct connection
+                        if proxy_failures >= 2:
+                            disable_proxy_permanently = True
+                            log("⚠ Cảnh báo: Proxy gặp sự cố kết nối liên tiếp. Tự động chuyển sang chế độ Direct IP (Direct fallback)!")
+
+                    retry_use_proxy = bool(PROXY_HOST and not disable_proxy_permanently)
                     retry_endpoint = random.randint(PROXY_ENDPOINT_MIN, PROXY_ENDPOINT_MAX)
-                    log(f"Retry visit {i} với VN-{retry_endpoint}")
+                    log(f"Retry visit {i} (Proxy: {retry_use_proxy})")
                     result = run_visit(
                         browser,
                         i,
                         retry_endpoint,
                         cached_articles=discovered_articles,
+                        use_proxy=retry_use_proxy,
                     )
                     if result.get("article_urls"):
                         discovered_articles = result["article_urls"]
 
                 if result["http_ok"]:
                     http_success += 1
+                else:
+                    if use_proxy:
+                        proxy_failures += 1
+                        if proxy_failures >= 2:
+                            disable_proxy_permanently = True
+                            log("⚠ Cảnh báo: Proxy gặp sự cố kết nối liên tiếp. Tự động chuyển sang chế độ Direct IP (Direct fallback)!")
 
                 if result["ga_hit"]:
                     ga_success += 1
